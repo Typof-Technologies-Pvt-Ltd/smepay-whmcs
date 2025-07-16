@@ -76,8 +76,8 @@ Ensure you use **live Client ID and Secret** from your SMEPay merchant dashboard
 
 ## 🛠 Resources
 
-- [SMEPay API Docs](https://smepay.in/docs)
-- [Postman Collection](https://github.com/YOUR_GITHUB/smepay-whmcs-module/docs)
+- [Website](https://smepay.io)
+
 
 ---
 
