@@ -52,7 +52,7 @@ function smepay_link($params) {
     ]));
 
     $auth = json_decode($auth, true);
-    $token = $auth['token'] ?? null;
+    $token = $auth['access_token'] ?? null;
 
     if (!$token) {
         return "<p>Error: Unable to authenticate with SMEPay</p>";
