@@ -32,32 +32,67 @@ function smepay_config() {
 }
 
 function smepay_link($params) {
+    // Validate required parameters
+    if (empty($params['client_id']) || empty($params['client_secret'])) {
+        return "<p>Error: Missing SMEPay configuration</p>";
+    }
+
     $clientId = $params['client_id'];
     $clientSecret = $params['client_secret'];
-    $callbackUrl = $params['callback_url'];
+    $callbackUrl = $params['callback_url'] ?? '';
     $env = $params['environment'] === 'Production' ? 'https://apps.typof.com' : 'https://apps.typof.in';
 
     $invoiceId = $params['invoiceid'];
     $amount = $params['amount'];
-    $name = $params['clientdetails']['firstname'] . ' ' . $params['clientdetails']['lastname'];
-    $email = $params['clientdetails']['email'];
-    $phone = $params['clientdetails']['phonenumber'];
+    $name = trim(($params['clientdetails']['firstname'] ?? '') . ' ' . ($params['clientdetails']['lastname'] ?? ''));
+    $email = $params['clientdetails']['email'] ?? '';
+    $phone = $params['clientdetails']['phonenumber'] ?? '';
 
-    $auth = file_get_contents("$env/api/external/auth", false, stream_context_create([
-        'http' => [
-            'method' => 'POST',
-            'header' => "Content-Type: application/json",
-            'content' => json_encode(['client_id' => $clientId, 'client_secret' => $clientSecret])
-        ]
-    ]));
+    // Step 1: Authenticate with SMEPay using cURL
+    $authData = [
+        'client_id' => $clientId,
+        'client_secret' => $clientSecret
+    ];
 
-    $auth = json_decode($auth, true);
-    $token = $auth['access_token'] ?? null;
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => "$env/api/external/auth",
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($authData),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Accept: application/json'
+        ],
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_FOLLOWLOCATION => true
+    ]);
 
-    if (!$token) {
-        return "<p>Error: Unable to authenticate with SMEPay</p>";
+    $authResponse = curl_exec($ch);
+    $authHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $authError = curl_error($ch);
+    curl_close($ch);
+
+    if ($authResponse === false || !empty($authError)) {
+        logActivity("SMEPay Auth Error: " . $authError);
+        return "<p>Error: Unable to connect to SMEPay authentication service</p>";
     }
 
+    if ($authHttpCode !== 200) {
+        logActivity("SMEPay Auth HTTP Error: " . $authHttpCode);
+        return "<p>Error: SMEPay authentication failed (HTTP $authHttpCode)</p>";
+    }
+
+    $auth = json_decode($authResponse, true);
+    if (json_last_error() !== JSON_ERROR_NONE || !isset($auth['access_token'])) {
+        logActivity("SMEPay Auth JSON Error: " . json_last_error_msg());
+        return "<p>Error: Invalid authentication response from SMEPay</p>";
+    }
+
+    $token = $auth['access_token'];
+
+    // Step 2: Create order using cURL
     $orderData = [
         'client_id' => $clientId,
         'amount' => $amount,
@@ -70,20 +105,45 @@ function smepay_link($params) {
         ]
     ];
 
-    $result = file_get_contents("$env/api/external/create-order", false, stream_context_create([
-        'http' => [
-            'method' => 'POST',
-            'header' => "Authorization: Bearer $token\r\nContent-Type: application/json",
-            'content' => json_encode($orderData)
-        ]
-    ]));
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => "$env/api/external/create-order",
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($orderData),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_HTTPHEADER => [
+            "Authorization: Bearer $token",
+            'Content-Type: application/json',
+            'Accept: application/json'
+        ],
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_FOLLOWLOCATION => true
+    ]);
 
-    $response = json_decode($result, true);
-    $slug = $response['order_slug'] ?? null;
+    $orderResponse = curl_exec($ch);
+    $orderHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $orderError = curl_error($ch);
+    curl_close($ch);
 
-    if (!$slug) {
-        return "<p><strong>SMEPay Order Creation Failed</strong><br><pre>" . json_encode($response, JSON_PRETTY_PRINT) . "</pre></p>";
+    if ($orderResponse === false || !empty($orderError)) {
+        logActivity("SMEPay Order Error: " . $orderError);
+        return "<p>Error: Unable to create order with SMEPay</p>";
     }
+
+    if ($orderHttpCode !== 200) {
+        logActivity("SMEPay Order HTTP Error: " . $orderHttpCode . " - " . $orderResponse);
+        return "<p>Error: SMEPay order creation failed (HTTP $orderHttpCode)</p>";
+    }
+
+    $response = json_decode($orderResponse, true);
+    if (json_last_error() !== JSON_ERROR_NONE || !isset($response['order_slug'])) {
+        logActivity("SMEPay Order JSON Error: " . json_last_error_msg() . " - " . $orderResponse);
+        return "<p><strong>SMEPay Order Creation Failed</strong><br><pre>" . htmlspecialchars($orderResponse, ENT_QUOTES, 'UTF-8') . "</pre></p>";
+    }
+
+    $slug = htmlspecialchars($response['order_slug'], ENT_QUOTES, 'UTF-8');
+    $callbackUrlEncoded = htmlspecialchars($callbackUrl, ENT_QUOTES, 'UTF-8');
 
     return <<<HTML
 <script src="https://typof.co/smepay/checkout.js"></script>
@@ -94,7 +154,7 @@ function handleOpenSMEPay() {
     window.smepayCheckout({
       slug: "{$slug}",
       onSuccess: function(data) {
-        window.location.href = '{$callbackUrl}?order_id=' + encodeURIComponent(data.order_id);
+        window.location.href = '{$callbackUrlEncoded}?order_id=' + encodeURIComponent(data.order_id);
       },
       onFailure: function() {
         alert("Payment failed or cancelled.");
