@@ -82,7 +82,7 @@ function smepay_link($params) {
     $slug = $response['order_slug'] ?? null;
 
     if (!$slug) {
-        return "<p>Error: Unable to create payment order</p>";
+        return "<p><strong>SMEPay Order Creation Failed</strong><br><pre>" . json_encode($response, JSON_PRETTY_PRINT) . "</pre></p>";
     }
 
     return <<<HTML
