@@ -20,7 +20,7 @@ $auth = file_get_contents("$env/api/external/auth", false, stream_context_create
     ]
 ]));
 $auth = json_decode($auth, true);
-$token = $auth['token'] ?? null;
+$token = $auth['access_token'] ?? null;
 if (!$token) die("Authentication Failed");
 
 $validation = file_get_contents("$env/api/external/validate-order", false, stream_context_create([
