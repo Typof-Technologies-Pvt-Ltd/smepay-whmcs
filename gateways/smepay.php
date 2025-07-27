@@ -70,7 +70,7 @@ function smepay_link($params) {
         $email = 'customer@example.com';
     }
     
-    // Ensure phone number has minimum length (adjust as per SMEPay requirements)
+    // Ensure phone number has minimum length
     if (strlen($phone) < 10) {
         $phone = '0000000000';
     }
@@ -119,23 +119,25 @@ function smepay_link($params) {
 
     $token = $auth['access_token'];
 
-    // Step 2: Create order using cURL with properly handled customer details
+    // Create unique order ID with random string
+    $randomString = strtoupper(substr(md5(uniqid(mt_rand(), true)), 0, 8));
+    $uniqueOrderId = "INV{$invoiceId}_{$randomString}";
+
+    // Step 2: Create order using cURL
     $orderData = [
         'client_id' => $clientId,
-        'amount' => number_format($amount, 2, '.', ''), // Ensure proper decimal format
-        'order_id' => $invoiceId,
+        'amount' => number_format($amount, 2, '.', ''),
+        'order_id' => $uniqueOrderId,
         'callback_url' => $callbackUrl,
         'customer_details' => [
             'name' => $name,
             'email' => $email,
             'mobile' => $phone,
-            // Add additional fields if required by SMEPay API
             'first_name' => $firstName,
             'last_name' => $lastName
         ]
     ];
 
-    // Log the order data for debugging (remove in production)
     logActivity("SMEPay Order Data: " . json_encode($orderData));
 
     $ch = curl_init();
@@ -183,7 +185,28 @@ function smepay_link($params) {
                htmlspecialchars($orderResponse, ENT_QUOTES, 'UTF-8') . "</pre></p>";
     }
 
-    $slug = htmlspecialchars($response['order_slug'], ENT_QUOTES, 'UTF-8');
+    $slug = $response['order_slug'];
+
+    // Step 3: Store slug using simple file-based approach (NO DATABASE ISSUES)
+    try {
+        $slugFile = dirname(__FILE__) . "/slugs/" . $uniqueOrderId . ".txt";
+        $slugDir = dirname($slugFile);
+        
+        // Create directory if it doesn't exist
+        if (!is_dir($slugDir)) {
+            mkdir($slugDir, 0755, true);
+        }
+        
+        // Store slug in file
+        file_put_contents($slugFile, $slug);
+        
+        logActivity("SMEPay Slug stored: Invoice #$invoiceId, Order: $uniqueOrderId, Slug: $slug");
+    } catch (Exception $e) {
+        logActivity("SMEPay Slug Storage Error: " . $e->getMessage());
+        // Continue anyway
+    }
+
+    $slugEscaped = htmlspecialchars($slug, ENT_QUOTES, 'UTF-8');
     $callbackUrlEncoded = htmlspecialchars($callbackUrl, ENT_QUOTES, 'UTF-8');
 
     return <<<HTML
@@ -193,7 +216,7 @@ function smepay_link($params) {
 function handleOpenSMEPay() {
   if (window.smepayCheckout) {
     window.smepayCheckout({
-      slug: "{$slug}",
+      slug: "{$slugEscaped}",
       onSuccess: function(data) {
         window.location.href = '{$callbackUrlEncoded}?order_id=' + encodeURIComponent(data.order_id);
       },
@@ -208,3 +231,4 @@ function handleOpenSMEPay() {
 </script>
 HTML;
 }
+
