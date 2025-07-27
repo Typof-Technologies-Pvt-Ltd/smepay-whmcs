@@ -43,10 +43,37 @@ function smepay_link($params) {
     $env = $params['environment'] === 'Production' ? 'https://apps.typof.com' : 'https://apps.typof.in';
 
     $invoiceId = $params['invoiceid'];
-    $amount = $params['amount'];
-    $name = trim(($params['clientdetails']['firstname'] ?? '') . ' ' . ($params['clientdetails']['lastname'] ?? ''));
-    $email = $params['clientdetails']['email'] ?? '';
-    $phone = $params['clientdetails']['phonenumber'] ?? '';
+    $amount = floatval($params['amount']);
+
+    // Validate amount
+    if ($amount <= 0) {
+        return "<p>Error: Invalid amount for SMEPay order</p>";
+    }
+
+    // Handle customer details with proper defaults
+    $clientDetails = $params['clientdetails'] ?? [];
+    
+    // Extract and sanitize customer information with defaults
+    $firstName = !empty($clientDetails['firstname']) ? trim($clientDetails['firstname']) : 'Customer';
+    $lastName = !empty($clientDetails['lastname']) ? trim($clientDetails['lastname']) : '';
+    $email = !empty($clientDetails['email']) ? trim($clientDetails['email']) : 'customer@example.com';
+    $phone = !empty($clientDetails['phonenumber']) ? preg_replace('/[^\d+]/', '', $clientDetails['phonenumber']) : '0000000000';
+    
+    // Construct full name
+    $name = trim($firstName . ' ' . $lastName);
+    if (empty($name)) {
+        $name = 'Customer';
+    }
+    
+    // Validate email format
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $email = 'customer@example.com';
+    }
+    
+    // Ensure phone number has minimum length (adjust as per SMEPay requirements)
+    if (strlen($phone) < 10) {
+        $phone = '0000000000';
+    }
 
     // Step 1: Authenticate with SMEPay using cURL
     $authData = [
@@ -80,7 +107,7 @@ function smepay_link($params) {
     }
 
     if ($authHttpCode !== 200) {
-        logActivity("SMEPay Auth HTTP Error: " . $authHttpCode);
+        logActivity("SMEPay Auth HTTP Error: " . $authHttpCode . " - " . $authResponse);
         return "<p>Error: SMEPay authentication failed (HTTP $authHttpCode)</p>";
     }
 
@@ -92,18 +119,24 @@ function smepay_link($params) {
 
     $token = $auth['access_token'];
 
-    // Step 2: Create order using cURL
+    // Step 2: Create order using cURL with properly handled customer details
     $orderData = [
         'client_id' => $clientId,
-        'amount' => $amount,
+        'amount' => number_format($amount, 2, '.', ''), // Ensure proper decimal format
         'order_id' => $invoiceId,
         'callback_url' => $callbackUrl,
         'customer_details' => [
+            'name' => $name,
             'email' => $email,
             'mobile' => $phone,
-            'name' => $name
+            // Add additional fields if required by SMEPay API
+            'first_name' => $firstName,
+            'last_name' => $lastName
         ]
     ];
+
+    // Log the order data for debugging (remove in production)
+    logActivity("SMEPay Order Data: " . json_encode($orderData));
 
     $ch = curl_init();
     curl_setopt_array($ch, [
@@ -132,14 +165,22 @@ function smepay_link($params) {
     }
 
     if ($orderHttpCode !== 200) {
-        logActivity("SMEPay Order HTTP Error: " . $orderHttpCode . " - " . $orderResponse);
-        return "<p>Error: SMEPay order creation failed (HTTP $orderHttpCode)</p>";
+        $errorDetails = [
+            'http_code' => $orderHttpCode,
+            'request_data' => $orderData,
+            'response' => $orderResponse,
+            'environment' => $env
+        ];
+        logActivity("SMEPay Order HTTP Error: " . json_encode($errorDetails));
+        return "<p><strong>SMEPay Order Creation Failed (HTTP $orderHttpCode)</strong><br><pre>" . 
+               htmlspecialchars($orderResponse, ENT_QUOTES, 'UTF-8') . "</pre></p>";
     }
 
     $response = json_decode($orderResponse, true);
     if (json_last_error() !== JSON_ERROR_NONE || !isset($response['order_slug'])) {
         logActivity("SMEPay Order JSON Error: " . json_last_error_msg() . " - " . $orderResponse);
-        return "<p><strong>SMEPay Order Creation Failed</strong><br><pre>" . htmlspecialchars($orderResponse, ENT_QUOTES, 'UTF-8') . "</pre></p>";
+        return "<p><strong>SMEPay Order Creation Failed</strong><br><pre>" . 
+               htmlspecialchars($orderResponse, ENT_QUOTES, 'UTF-8') . "</pre></p>";
     }
 
     $slug = htmlspecialchars($response['order_slug'], ENT_QUOTES, 'UTF-8');
