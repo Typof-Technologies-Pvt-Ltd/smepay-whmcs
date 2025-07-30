@@ -209,9 +209,13 @@ function smepay_link($params) {
     $slugEscaped = htmlspecialchars($slug, ENT_QUOTES, 'UTF-8');
     $callbackUrlEncoded = htmlspecialchars($callbackUrl, ENT_QUOTES, 'UTF-8');
 
-    return <<<HTML
+return <<<HTML
 <script src="https://typof.co/smepay/checkout.js"></script>
-<button onclick="handleOpenSMEPay()">Pay Now with SMEPay</button>
+<div class="payment-btn-container">
+    <button type="button" class="btn btn-success btn-block" onclick="handleOpenSMEPay()">
+        <i class="fas fa-qrcode"></i> Pay Now
+    </button>
+</div>
 <script>
 function handleOpenSMEPay() {
   if (window.smepayCheckout) {
@@ -229,6 +233,21 @@ function handleOpenSMEPay() {
   }
 }
 </script>
+<style>
+.payment-btn-container {
+    margin: 10px 0;
+}
+.payment-btn-container .btn {
+    font-size: 16px;
+    padding: 12px 20px;
+    border-radius: 4px;
+    transition: all 0.3s ease;
+}
+.payment-btn-container .btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+</style>
 HTML;
 }
 
