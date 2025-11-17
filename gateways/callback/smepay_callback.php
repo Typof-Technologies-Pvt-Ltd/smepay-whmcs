@@ -65,7 +65,7 @@ if (!$gateway) {
 
 $clientId = $gateway['client_id'];
 $clientSecret = $gateway['client_secret'];
-$env = $gateway['environment'] === 'Production' ? 'https://apps.typof.com' : 'https://apps.typof.in';
+$env = $gateway['environment'] === 'Production' ? 'https://extranet.smepay.in/api/wiz/external' : 'https://staging.smepay.in/api/wiz/external';
 
 if (empty($clientId) || empty($clientSecret)) {
     logActivity("SMEPay Callback: Missing gateway configuration");
@@ -80,7 +80,7 @@ $authData = [
 
 $ch = curl_init();
 curl_setopt_array($ch, [
-    CURLOPT_URL => "$env/api/external/auth",
+    CURLOPT_URL => "$env/auth",
     CURLOPT_POST => true,
     CURLOPT_POSTFIELDS => json_encode($authData),
     CURLOPT_RETURNTRANSFER => true,
@@ -129,7 +129,7 @@ logActivity("SMEPay Validation Request: " . json_encode($validationData));
 
 $ch = curl_init();
 curl_setopt_array($ch, [
-    CURLOPT_URL => "$env/api/external/validate-order",
+    CURLOPT_URL => "$env/order/validate",
     CURLOPT_POST => true,
     CURLOPT_POSTFIELDS => json_encode($validationData),
     CURLOPT_RETURNTRANSFER => true,
@@ -170,7 +170,7 @@ logActivity("SMEPay Validation Response: " . json_encode($validationResult));
 $validationStatus = $validationResult['status'] ?? false;
 $paymentStatus = $validationResult['payment_status'] ?? null;
 
-if ($validationStatus === true && $paymentStatus === 'paid') {
+if ($validationStatus === true && $paymentStatus === 'SUCCESS') {
     
     $paidAmount = floatval($invoiceAmount);
     $transactionId = $orderIdWithPrefix;

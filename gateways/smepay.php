@@ -40,7 +40,7 @@ function smepay_link($params) {
     $clientId = $params['client_id'];
     $clientSecret = $params['client_secret'];
     $callbackUrl = $params['callback_url'] ?? '';
-    $env = $params['environment'] === 'Production' ? 'https://apps.typof.com' : 'https://apps.typof.in';
+    $env = $params['environment'] === 'Production' ? 'https://extranet.smepay.in/api/wiz/external' : 'https://staging.smepay.in/api/wiz/external';
 
     $invoiceId = $params['invoiceid'];
     $amount = floatval($params['amount']);
@@ -83,7 +83,7 @@ function smepay_link($params) {
 
     $ch = curl_init();
     curl_setopt_array($ch, [
-        CURLOPT_URL => "$env/api/external/auth",
+        CURLOPT_URL => "$env/auth",
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => json_encode($authData),
         CURLOPT_RETURNTRANSFER => true,
@@ -128,7 +128,7 @@ function smepay_link($params) {
         'client_id' => $clientId,
         'amount' => number_format($amount, 2, '.', ''),
         'order_id' => $uniqueOrderId,
-        'callback_url' => $callbackUrl,
+        'callback_url' => $callbackUrl.'?order_id='.$uniqueOrderId,
         'customer_details' => [
             'name' => $name,
             'email' => $email,
@@ -142,7 +142,7 @@ function smepay_link($params) {
 
     $ch = curl_init();
     curl_setopt_array($ch, [
-        CURLOPT_URL => "$env/api/external/create-order",
+        CURLOPT_URL => "$env/order/create",
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => json_encode($orderData),
         CURLOPT_RETURNTRANSFER => true,
@@ -210,7 +210,7 @@ function smepay_link($params) {
     $callbackUrlEncoded = htmlspecialchars($callbackUrl, ENT_QUOTES, 'UTF-8');
 
 return <<<HTML
-<script src="https://typof.co/smepay/checkout.js"></script>
+<script src="https://typof.co/smepay/checkout-v2.js"></script>
 <div class="payment-btn-container">
     <button type="button" class="btn btn-success btn-block" onclick="handleOpenSMEPay()">
         <i class="fas fa-qrcode"></i> Pay Now
