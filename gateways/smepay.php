@@ -207,6 +207,7 @@ function smepay_link($params) {
     }
 
     $slugEscaped = htmlspecialchars($slug, ENT_QUOTES, 'UTF-8');
+    $orderidEscaped = htmlspecialchars($uniqueOrderId, ENT_QUOTES, 'UTF-8');
     $callbackUrlEncoded = htmlspecialchars($callbackUrl, ENT_QUOTES, 'UTF-8');
 
 return <<<HTML
@@ -222,7 +223,7 @@ function handleOpenSMEPay() {
     window.smepayCheckout({
       slug: "{$slugEscaped}",
       onSuccess: function(data) {
-        window.location.href = '{$callbackUrlEncoded}?order_id=' + encodeURIComponent(data.order_id);
+        window.location.href = '{$callbackUrlEncoded}?order_id={$orderidEscaped}';
       },
       onFailure: function() {
         alert("Payment failed or cancelled.");
