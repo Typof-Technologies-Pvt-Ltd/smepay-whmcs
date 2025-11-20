@@ -4,12 +4,18 @@ require_once '../../../init.php';
 require_once '../../../includes/gatewayfunctions.php';
 require_once '../../../includes/invoicefunctions.php';
 
-// Get the order_id from the callback
-$orderIdWithPrefix = $_GET['order_id'] ?? null;
+// Get the order_id from the callback (try multiple sources)
+$orderIdWithPrefix = $_GET['order_id'] ?? $_POST['order_id'] ?? $_REQUEST['order_id'] ?? null;
+
+// Log all incoming parameters for debugging
+logActivity("SMEPay Callback: Received parameters - GET: " . json_encode($_GET) . ", POST: " . json_encode($_POST));
+
 if (!$orderIdWithPrefix) {
     logActivity("SMEPay Callback: Missing order_id parameter");
     die("Invalid Request - Missing order_id");
 }
+
+logActivity("SMEPay Callback: Processing order_id = $orderIdWithPrefix");
 
 // Extract the actual invoice ID
 $invoiceId = null;
@@ -27,26 +33,68 @@ if (!is_numeric($invoiceId)) {
     die("Invalid Request - Invalid invoice ID");
 }
 
-// Retrieve slug from file (NO DATABASE ISSUES)
+// Retrieve slug from file with enhanced search
 $slug = null;
+$slugsDir = dirname(__FILE__) . "/../slugs";
+
 try {
-    $slugFile = dirname(__FILE__) . "/../slugs/" . $orderIdWithPrefix . ".txt";
+    // Method 1: Try exact match
+    $slugFile = $slugsDir . "/" . $orderIdWithPrefix . ".txt";
+    
+    logActivity("SMEPay Callback: Looking for slug file: $slugFile");
     
     if (file_exists($slugFile)) {
         $slug = trim(file_get_contents($slugFile));
-        // Clean up the file after reading
-        unlink($slugFile);
-        logActivity("SMEPay Callback: Retrieved slug $slug for order $orderIdWithPrefix");
+        //unlink($slugFile);
+        logActivity("SMEPay Callback: Retrieved slug $slug for order $orderIdWithPrefix (exact match)");
     } else {
-        logActivity("SMEPay Callback: Slug file not found for order $orderIdWithPrefix");
+        logActivity("SMEPay Callback: Slug file not found at exact path: $slugFile");
+        
+        // Method 2: Search by invoice ID pattern
+        $pattern = $slugsDir . "/INV{$invoiceId}_*.txt";
+        $matchingFiles = glob($pattern);
+        
+        logActivity("SMEPay Callback: Searching with pattern: $pattern, Found files: " . json_encode($matchingFiles));
+        
+        if (!empty($matchingFiles)) {
+            // Get the most recent file
+            usort($matchingFiles, function($a, $b) {
+                return filemtime($b) - filemtime($a);
+            });
+            
+            $slugFile = $matchingFiles[0];
+            $slug = trim(file_get_contents($slugFile));
+            //unlink($slugFile);
+            logActivity("SMEPay Callback: Retrieved slug $slug from pattern match: " . basename($slugFile));
+        } else {
+            // Method 3: Check all files in directory for debugging
+            $allFiles = glob($slugsDir . "/*.txt");
+            logActivity("SMEPay Callback: All files in slugs directory: " . json_encode(array_map('basename', $allFiles)));
+            
+            // Method 4: Try to find by invoice ID in any recent file
+            foreach ($allFiles as $file) {
+                if ((time() - filemtime($file)) < 600) { // Within last 10 minutes
+                    $filename = basename($file, '.txt');
+                    if (strpos($filename, "INV{$invoiceId}") !== false) {
+                        $slug = trim(file_get_contents($file));
+                        //unlink($file);
+                        logActivity("SMEPay Callback: Retrieved slug $slug from recent file: " . basename($file));
+                        break;
+                    }
+                }
+            }
+        }
     }
 } catch (Exception $e) {
     logActivity("SMEPay Callback Slug Retrieval Error: " . $e->getMessage());
 }
 
 if (!$slug) {
-    logActivity("SMEPay Callback: Unable to find slug for order $orderIdWithPrefix");
-    die("Order slug not found");
+    logActivity("SMEPay Callback: Unable to find slug for order $orderIdWithPrefix, Invoice #$invoiceId");
+    logActivity("SMEPay Callback: Slugs directory path: $slugsDir");
+    logActivity("SMEPay Callback: Directory exists: " . (is_dir($slugsDir) ? 'yes' : 'no'));
+    logActivity("SMEPay Callback: Directory readable: " . (is_readable($slugsDir) ? 'yes' : 'no'));
+    die("Order slug not found - Check activity log for details");
 }
 
 // Get invoice details
@@ -104,8 +152,8 @@ if ($authResponse === false || !empty($authError)) {
 }
 
 if ($authHttpCode !== 200) {
-    logActivity("SMEPay Callback Auth HTTP Error: " . $authHttpCode);
-    die("Authentication Failed");
+    logActivity("SMEPay Callback Auth HTTP Error: " . $authHttpCode . " - " . $authResponse);
+    die("Authentication Failed - HTTP " . $authHttpCode);
 }
 
 $auth = json_decode($authResponse, true);
@@ -121,9 +169,10 @@ $invoiceAmount = number_format(floatval($invoiceData['total']), 1, '.', '');
 
 $validationData = [
     'client_id' => $clientId,
-    'amount' => $invoiceAmount,
+    'amount' => (float)$invoiceAmount,
     'slug' => $slug
 ];
+
 
 logActivity("SMEPay Validation Request: " . json_encode($validationData));
 
@@ -148,14 +197,15 @@ $validationHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $validationError = curl_error($ch);
 curl_close($ch);
 
+
 if ($validationResponse === false || !empty($validationError)) {
     logActivity("SMEPay Callback Validation Error: " . $validationError);
     die("Order Validation Service Error");
 }
 
 if ($validationHttpCode !== 200) {
-    logActivity("SMEPay Callback Validation HTTP Error: " . $validationHttpCode);
-    die("Order Validation Failed");
+    logActivity("SMEPay Callback Validation HTTP Error: " . $validationHttpCode . " - " . $validationResponse);
+    die("Order Validation Failed - HTTP " . $validationHttpCode);
 }
 
 $validationResult = json_decode($validationResponse, true);
@@ -166,14 +216,24 @@ if (json_last_error() !== JSON_ERROR_NONE) {
 
 logActivity("SMEPay Validation Response: " . json_encode($validationResult));
 
-// Check validation response
+// Check validation response (handle multiple success statuses)
 $validationStatus = $validationResult['status'] ?? false;
-$paymentStatus = $validationResult['payment_status'] ?? null;
+$paymentStatus = strtoupper($validationResult['payment_status'] ?? '');
 
-if ($validationStatus === true && $paymentStatus === 'SUCCESS') {
+$successStatuses = ['SUCCESS', 'PAID', 'COMPLETED', 'SUCCESSFUL'];
+$isSuccess = $validationStatus === true && in_array($paymentStatus, $successStatuses);
+
+if ($isSuccess) {
     
     $paidAmount = floatval($invoiceAmount);
     $transactionId = $orderIdWithPrefix;
+    
+    // Check if already paid to prevent duplicates
+    if ($invoiceData['status'] === 'Paid') {
+        logActivity("SMEPay: Invoice #$invoiceId already marked as paid");
+        header("Location: " . $CONFIG['SystemURL'] . "/viewinvoice.php?id=" . $invoiceId);
+        exit;
+    }
     
     // Add payment to WHMCS
     $addPaymentResult = addInvoicePayment(
@@ -186,7 +246,7 @@ if ($validationStatus === true && $paymentStatus === 'SUCCESS') {
     
     if ($addPaymentResult) {
         logTransaction("SMEPay", $validationResult, "Successful");
-        logActivity("SMEPay Payment Successful: Invoice #$invoiceId - Order: $orderIdWithPrefix - Amount: $paidAmount");
+        logActivity("SMEPay Payment Successful: Invoice #$invoiceId - Order: $orderIdWithPrefix - Amount: $paidAmount - Slug: $slug");
         
         header("Location: " . $CONFIG['SystemURL'] . "/viewinvoice.php?id=" . $invoiceId);
         exit;
@@ -196,8 +256,8 @@ if ($validationStatus === true && $paymentStatus === 'SUCCESS') {
     }
     
 } else {
-    $statusMsg = "Status: " . ($validationStatus ? 'true' : 'false') . ", Payment: " . ($paymentStatus ?? 'unknown');
-    logActivity("SMEPay Payment Validation Failed: Invoice #$invoiceId - $statusMsg");
+    $statusMsg = "Status: " . ($validationStatus ? 'true' : 'false') . ", Payment: " . $paymentStatus;
+    logActivity("SMEPay Payment Validation Failed: Invoice #$invoiceId - Order: $orderIdWithPrefix - $statusMsg");
     logTransaction("SMEPay", $validationResult, "Validation Failed - $statusMsg");
     
     header("Location: " . $CONFIG['SystemURL'] . "/viewinvoice.php?id=" . $invoiceId . "&paymentfailed=1");

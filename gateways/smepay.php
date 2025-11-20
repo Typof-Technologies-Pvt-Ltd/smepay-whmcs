@@ -53,29 +53,87 @@ function smepay_link($params) {
     // Handle customer details with proper defaults
     $clientDetails = $params['clientdetails'] ?? [];
     
-    // Extract and sanitize customer information with defaults
     $firstName = !empty($clientDetails['firstname']) ? trim($clientDetails['firstname']) : 'Customer';
     $lastName = !empty($clientDetails['lastname']) ? trim($clientDetails['lastname']) : '';
     $email = !empty($clientDetails['email']) ? trim($clientDetails['email']) : 'customer@example.com';
     $phone = !empty($clientDetails['phonenumber']) ? preg_replace('/[^\d+]/', '', $clientDetails['phonenumber']) : '0000000000';
     
-    // Construct full name
     $name = trim($firstName . ' ' . $lastName);
     if (empty($name)) {
         $name = 'Customer';
     }
     
-    // Validate email format
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $email = 'customer@example.com';
     }
     
-    // Ensure phone number has minimum length
     if (strlen($phone) < 10) {
         $phone = '0000000000';
     }
 
-    // Step 1: Authenticate with SMEPay using cURL
+    // Check for existing recent orders for this invoice
+    try {
+        $slugsDir = dirname(__FILE__) . "/slugs";
+        if (is_dir($slugsDir)) {
+            $pattern = $slugsDir . "/INV{$invoiceId}_*.txt";
+            $existingFiles = glob($pattern);
+            
+            foreach ($existingFiles as $file) {
+                // Check if file is less than 5 minutes old
+                if ((time() - filemtime($file)) < 300) {
+                    $existingSlug = trim(file_get_contents($file));
+                    logActivity("SMEPay: Reusing existing order for Invoice #$invoiceId, Slug: $existingSlug");
+                    
+                    $slugEscaped = htmlspecialchars($existingSlug, ENT_QUOTES, 'UTF-8');
+                    
+                    return <<<HTML
+<script src="https://typof.co/smepay/checkout-v2.js"></script>
+<div class="payment-btn-container">
+    <button type="button" class="btn btn-success btn-block" id="smepay-btn" onclick="handleOpenSMEPay()">
+        <i class="fas fa-qrcode"></i> Pay Now
+    </button>
+</div>
+<script>
+var smepayProcessing = false;
+function handleOpenSMEPay() {
+  if (smepayProcessing) { console.log('SMEPay: Already processing'); return false; }
+  var btn = document.getElementById('smepay-btn');
+  if (window.smepayCheckout) {
+    smepayProcessing = true;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+    window.smepayCheckout({
+      slug: "{$slugEscaped}",
+      onSuccess: function(data) {
+        if (data.callback_url) { window.location.href = data.callback_url; }
+      },
+      onFailure: function() {
+        alert("Payment failed or cancelled.");
+        smepayProcessing = false; btn.disabled = false; btn.innerHTML = '<i class="fas fa-qrcode"></i> Pay Now';
+      },
+      onClose: function() {
+        smepayProcessing = false; btn.disabled = false; btn.innerHTML = '<i class="fas fa-qrcode"></i> Pay Now';
+      }
+    });
+  }
+  return false;
+}
+</script>
+<style>
+.payment-btn-container { margin: 10px 0; }
+.payment-btn-container .btn { font-size: 16px; padding: 12px 20px; border-radius: 4px; transition: all 0.3s ease; }
+.payment-btn-container .btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
+.payment-btn-container .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+</style>
+HTML;
+                }
+            }
+        }
+    } catch (Exception $e) {
+        logActivity("SMEPay: Error checking existing orders: " . $e->getMessage());
+    }
+
+    // Step 1: Authenticate with SMEPay
     $authData = [
         'client_id' => $clientId,
         'client_secret' => $clientSecret
@@ -108,7 +166,7 @@ function smepay_link($params) {
 
     if ($authHttpCode !== 200) {
         logActivity("SMEPay Auth HTTP Error: " . $authHttpCode . " - " . $authResponse);
-        return "<p>Error: SMEPay authentication failed (HTTP $authHttpCode)</p>";
+        return "<p>Error: SMEPay authentication failed (HTTP $authHttpCode) $env</p>";
     }
 
     $auth = json_decode($authResponse, true);
@@ -119,11 +177,11 @@ function smepay_link($params) {
 
     $token = $auth['access_token'];
 
-    // Create unique order ID with random string
+    // Create unique order ID
     $randomString = strtoupper(substr(md5(uniqid(mt_rand(), true)), 0, 8));
     $uniqueOrderId = "INV{$invoiceId}_{$randomString}";
 
-    // Step 2: Create order using cURL
+    // Step 2: Create order
     $orderData = [
         'client_id' => $clientId,
         'amount' => number_format($amount, 2, '.', ''),
@@ -187,51 +245,80 @@ function smepay_link($params) {
 
     $slug = $response['order_slug'];
 
-    // Step 3: Store slug using simple file-based approach (NO DATABASE ISSUES)
+    // Step 3: Store slug
     try {
         $slugFile = dirname(__FILE__) . "/slugs/" . $uniqueOrderId . ".txt";
         $slugDir = dirname($slugFile);
         
-        // Create directory if it doesn't exist
         if (!is_dir($slugDir)) {
             mkdir($slugDir, 0755, true);
         }
         
-        // Store slug in file
         file_put_contents($slugFile, $slug);
-        
         logActivity("SMEPay Slug stored: Invoice #$invoiceId, Order: $uniqueOrderId, Slug: $slug");
     } catch (Exception $e) {
         logActivity("SMEPay Slug Storage Error: " . $e->getMessage());
-        // Continue anyway
     }
 
     $slugEscaped = htmlspecialchars($slug, ENT_QUOTES, 'UTF-8');
-    $orderidEscaped = htmlspecialchars($uniqueOrderId, ENT_QUOTES, 'UTF-8');
-    $callbackUrlEncoded = htmlspecialchars($callbackUrl, ENT_QUOTES, 'UTF-8');
 
-return <<<HTML
+    return <<<HTML
 <script src="https://typof.co/smepay/checkout-v2.js"></script>
 <div class="payment-btn-container">
-    <button type="button" class="btn btn-success btn-block" onclick="handleOpenSMEPay()">
+    <button type="button" class="btn btn-success btn-block" id="smepay-btn" onclick="handleOpenSMEPay()">
         <i class="fas fa-qrcode"></i> Pay Now
     </button>
 </div>
 <script>
+var smepayProcessing = false;
+
 function handleOpenSMEPay() {
+  if (smepayProcessing) {
+    console.log('SMEPay: Payment already in progress');
+    return false;
+  }
+  
+  var btn = document.getElementById('smepay-btn');
+  
   if (window.smepayCheckout) {
+    smepayProcessing = true;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+    
     window.smepayCheckout({
       slug: "{$slugEscaped}",
       onSuccess: function(data) {
-        window.location.href = '{$callbackUrlEncoded}?order_id={$orderidEscaped}';
+        console.log('SMEPay: Payment successful', data);
+        if (data.callback_url) {
+          window.location.href = data.callback_url;
+        } else {
+          alert("Payment successful but callback URL missing.");
+          smepayProcessing = false;
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fas fa-qrcode"></i> Pay Now';
+        }
       },
-      onFailure: function() {
+      onFailure: function(error) {
+        console.error('SMEPay: Payment failed', error);
         alert("Payment failed or cancelled.");
+        smepayProcessing = false;
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-qrcode"></i> Pay Now';
+      },
+      onClose: function() {
+        console.log('SMEPay: Checkout closed');
+        smepayProcessing = false;
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-qrcode"></i> Pay Now';
       }
     });
   } else {
-    alert("SMEPay widget not loaded.");
+    alert("SMEPay widget not loaded. Please refresh the page and try again.");
+    smepayProcessing = false;
+    btn.disabled = false;
   }
+  
+  return false;
 }
 </script>
 <style>
@@ -244,11 +331,14 @@ function handleOpenSMEPay() {
     border-radius: 4px;
     transition: all 0.3s ease;
 }
-.payment-btn-container .btn:hover {
+.payment-btn-container .btn:hover:not(:disabled) {
     transform: translateY(-1px);
     box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+.payment-btn-container .btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 </style>
 HTML;
 }
-
