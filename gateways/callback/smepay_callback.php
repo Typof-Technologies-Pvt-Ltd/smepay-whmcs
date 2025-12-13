@@ -224,18 +224,25 @@ $successStatuses = ['SUCCESS', 'PAID', 'COMPLETED', 'SUCCESSFUL'];
 $isSuccess = $validationStatus === true && in_array($paymentStatus, $successStatuses);
 
 if ($isSuccess) {
-    
+
     $paidAmount = floatval($invoiceAmount);
-    $transactionId = $orderIdWithPrefix;
-    
-    // Check if already paid to prevent duplicates
+
+    // Use an explicit transaction id variable.
+    // If SMEPay returns its own transaction id in $validationResult, prefer that instead.
+    $transactionId = $orderIdWithPrefix;   // or: $validationResult['transaction_id'] ?? $orderIdWithPrefix;
+
+    // Duplicate-transaction protection (NEW LINE)
+    // This will stop the script if a transaction with the same ID already exists.
+    checkCbTransID($transactionId); // [web:8][web:11][web:24]
+
+    // Check if already paid to prevent duplicates (your existing logic)
     if ($invoiceData['status'] === 'Paid') {
         logActivity("SMEPay: Invoice #$invoiceId already marked as paid");
         header("Location: " . $CONFIG['SystemURL'] . "/viewinvoice.php?id=" . $invoiceId);
         exit;
     }
-    
-    // Add payment to WHMCS
+
+    // Add payment to WHMCS (unchanged except for using $transactionId variable)
     $addPaymentResult = addInvoicePayment(
         $invoiceId,
         $transactionId,
@@ -243,18 +250,18 @@ if ($isSuccess) {
         0,
         'smepay'
     );
-    
+
     if ($addPaymentResult) {
         logTransaction("SMEPay", $validationResult, "Successful");
         logActivity("SMEPay Payment Successful: Invoice #$invoiceId - Order: $orderIdWithPrefix - Amount: $paidAmount - Slug: $slug");
-        
+
         header("Location: " . $CONFIG['SystemURL'] . "/viewinvoice.php?id=" . $invoiceId);
         exit;
     } else {
         logActivity("SMEPay Payment Processing Error: Failed to add payment for Invoice #$invoiceId");
         die("Payment Processing Error");
     }
-    
+
 } else {
     $statusMsg = "Status: " . ($validationStatus ? 'true' : 'false') . ", Payment: " . $paymentStatus;
     logActivity("SMEPay Payment Validation Failed: Invoice #$invoiceId - Order: $orderIdWithPrefix - $statusMsg");
